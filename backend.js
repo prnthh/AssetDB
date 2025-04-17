@@ -1,147 +1,108 @@
+const express = require('express');
 const axios = require('axios');
 const FormData = require('form-data');
 const fs = require('fs');
 const path = require('path');
 const https = require('https');
+const multer = require('multer');
+const { v4: uuidv4 } = require('uuid');
+const cors = require('cors');
+
+// Initialize Express app
+const app = express();
+app.use(cors());
+const PORT = process.env.PORT || 3000;
 
 // Insecure HTTPS agent
 const httpsAgent = new https.Agent({ rejectUnauthorized: false });
 
 // Configuration
 const BASE_URL = 'http://192.168.0.239:42004';
-const UPLOAD_ID = 'fwk985eq8e';
-const IMAGE_PATH = './Screenshot.png';
-const OUTPUT_FILE = 'textured_mesh.glb';
+const OUTPUT_DIR = path.join(__dirname, 'outputs');
+const UPLOAD_DIR = path.join(__dirname, 'uploads');
 
-// Helper function to normalize URLs
+// Ensure output and upload directories exist
+if (!fs.existsSync(OUTPUT_DIR)) fs.mkdirSync(OUTPUT_DIR);
+if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR);
+
+// Multer setup for file uploads
+const storage = multer.diskStorage({
+    destination: (req, file, cb) => cb(null, UPLOAD_DIR),
+    filename: (req, file, cb) => cb(null, `${uuidv4()}-${file.originalname}`)
+});
+const upload = multer({ storage });
+
+// In-memory job store
+const jobs = {};
+
+// Middleware
+app.use(express.json());
+
+// Helper functions (adapted from original code)
 function normalizeUrl(url) {
     return url.replace(/\\/g, '/');
 }
 
-// Helper function to extract UUID from iframe source and construct .glb URL
 function deriveExportUrl(iframeHtml) {
-    // Normalize the HTML string to handle escaped backslashes
     const normalizedHtml = iframeHtml.replace(/\\+/g, '/');
     const match = normalizedHtml.match(/src="\/static\/([0-9a-f-]+)\/textured_mesh\.html"/);
-    if (!match) {
-        throw new Error('Could not extract UUID from iframe source');
-    }
-    const uuid = match[1];
-    return `${BASE_URL}/static/${uuid}/textured_mesh.glb`;
+    if (!match) throw new Error('Could not extract UUID from iframe source');
+    return `${BASE_URL}/static/${match[1]}/textured_mesh.glb`;
 }
 
-// Helper function to wait for a stream to complete
 async function waitForStream(stream) {
     return new Promise((resolve, reject) => {
         let data = '';
-        stream.on('data', chunk => {
-            data += chunk.toString();
-            console.log('Stream data chunk:', chunk.toString());
-        });
-        stream.on('end', () => {
-            console.log('Stream completed');
-            resolve(data);
-        });
-        stream.on('error', err => {
-            console.error('Stream error:', err.message);
-            reject(err);
-        });
+        stream.on('data', chunk => data += chunk.toString());
+        stream.on('end', () => resolve(data));
+        stream.on('error', err => reject(err));
     });
 }
 
-// Helper function to get event ID from response
 async function getEventId(response) {
     try {
-        console.log('Raw response for event ID:', response.data);
         const data = typeof response.data === 'string' ? JSON.parse(response.data) : response.data;
         const eventId = data?.event_id || data?.[0] || (typeof data === 'string' && data.match(/"([^"]+)"/)?.[1]);
-        if (!eventId) {
-            throw new Error('Could not extract event ID from response');
-        }
-        console.log('Extracted Event ID:', eventId);
+        if (!eventId) throw new Error('Could not extract event ID from response');
         return eventId;
     } catch (error) {
-        console.error('Error extracting event ID:', error.message);
-        throw error;
+        throw new Error('Error extracting event ID: ' + error.message);
     }
 }
 
-// Helper function to validate a URL
 async function validateUrl(url) {
     try {
         const normalizedUrl = normalizeUrl(url);
         const response = await axios.head(normalizedUrl, { httpsAgent });
-        console.log(`URL validation for ${normalizedUrl}: Status ${response.status}`);
         return response.status === 200;
     } catch (error) {
-        console.error(`URL validation failed for ${url}:`, error.message);
-        if (error.response) {
-            console.error(`Validation response status: ${error.response.status}`);
-        }
         return false;
     }
 }
 
-// Upload image file
-async function uploadImage() {
-    console.log('Uploading image...');
+async function uploadImage(imagePath, uploadId) {
     try {
         const form = new FormData();
-        form.append('files', fs.createReadStream(IMAGE_PATH), {
-            filename: 'Screenshot 2025-04-01 at 11.48.58AM.png',
+        form.append('files', fs.createReadStream(imagePath), {
+            filename: path.basename(imagePath),
             contentType: 'image/png',
         });
 
-        const uploadResponse = await axios.post(`${BASE_URL}/upload?upload_id=${UPLOAD_ID}`, form, {
-            headers: {
-                ...form.getHeaders(),
-                'Accept': '*/*',
-                'Accept-Language': 'en-US,en-GB;q=0.9,en;q=0.8',
-                'Cache-Control': 'no-cache',
-                'Connection': 'keep-alive',
-                'Origin': BASE_URL,
-                'Pragma': 'no-cache',
-                'Referer': `${BASE_URL}/`,
-                'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36',
-            },
+        const response = await axios.post(`${BASE_URL}/upload?upload_id=${uploadId}`, form, {
+            headers: { ...form.getHeaders(), 'Accept': '*/*' },
             httpsAgent,
         });
-
-        console.log('Upload response:', JSON.stringify(uploadResponse.data, null, 2));
-        return uploadResponse.data;
+        return response.data;
     } catch (error) {
-        console.error('Upload error:', error.message);
-        if (error.response) {
-            console.error('Upload response data:', error.response.data);
-            console.error('Upload response status:', error.response.status);
-        }
-        throw error;
+        throw new Error('Upload error: ' + error.message);
     }
 }
 
-// Trigger generation
 async function triggerGeneration(uploadData) {
-    console.log('Generating 3D model...');
     try {
         const postData = {
-            data: [
-                '',
-                { path: uploadData[0] },
-                null,
-                null,
-                null,
-                null,
-                30,
-                5,
-                1234,
-                256,
-                true,
-                8000,
-                true,
-            ],
+            data: ['', { path: uploadData[0] }, null, null, null, null, 30, 5, 1234, 256, true, 8000, true],
         };
-        console.log('Generation payload:', JSON.stringify(postData, null, 2));
-
         const postResponse = await axios.post(`${BASE_URL}/call/generation_all`, postData, {
             headers: { 'Content-Type': 'application/json' },
             httpsAgent,
@@ -154,52 +115,22 @@ async function triggerGeneration(uploadData) {
         });
 
         const streamData = await waitForStream(streamResponse.data);
-        console.log('Generation response completed');
+        const eventData = streamData.split('event: complete\ndata: ')[1];
+        if (!eventData) throw new Error('No complete event data found in stream');
 
-        // Parse the stream data to extract mesh paths
-        let whiteMeshPath, texturedMeshPath, whiteMeshLocalPath, texturedMeshLocalPath;
-        try {
-            const eventData = streamData.split('event: complete\ndata: ')[1];
-            if (!eventData) {
-                throw new Error('No complete event data found in stream');
-            }
-            const parsedData = JSON.parse(eventData);
-            whiteMeshLocalPath = parsedData[0].value.path;
-            texturedMeshLocalPath = parsedData[1].value.path;
-            whiteMeshPath = normalizeUrl(parsedData[0].value.url);
-            texturedMeshPath = normalizeUrl(parsedData[1].value.url);
-            console.log('Parsed generation data:', {
-                whiteMeshLocalPath,
-                texturedMeshLocalPath,
-                whiteMeshPath,
-                texturedMeshPath,
-            });
-
-            // Validate URLs (optional, for debugging)
-            console.log('Validating generation URLs...');
-            const whiteMeshValid = await validateUrl(whiteMeshPath);
-            const texturedMeshValid = await validateUrl(texturedMeshPath);
-            console.log('URL validation results:', { whiteMeshValid, texturedMeshValid });
-        } catch (error) {
-            console.error('Error parsing generation stream data:', error.message);
-            console.error('Raw stream data:', streamData);
-            throw error;
-        }
-
-        return { whiteMeshPath, texturedMeshPath, whiteMeshLocalPath, texturedMeshLocalPath };
+        const parsedData = JSON.parse(eventData);
+        return {
+            whiteMeshLocalPath: parsedData[0].value.path,
+            texturedMeshLocalPath: parsedData[1].value.path,
+            whiteMeshPath: normalizeUrl(parsedData[0].value.url),
+            texturedMeshPath: normalizeUrl(parsedData[1].value.url),
+        };
     } catch (error) {
-        console.error('Generation error:', error.message);
-        if (error.response) {
-            console.error('Generation response data:', error.response.data);
-            console.error('Generation response status:', error.response.status);
-        }
-        throw error;
+        throw new Error('Generation error: ' + error.message);
     }
 }
 
-// Trigger lambda functions
 async function triggerLambda(lambdaNumber) {
-    console.log(`Calling lambda_${lambdaNumber}...`);
     try {
         const postResponse = await axios.post(`${BASE_URL}/call/lambda_${lambdaNumber}`, { data: [] }, {
             headers: { 'Content-Type': 'application/json' },
@@ -212,62 +143,29 @@ async function triggerLambda(lambdaNumber) {
             httpsAgent,
         });
 
-        const streamData = await waitForStream(streamResponse.data);
-        console.log(`Lambda_${lambdaNumber} response completed`);
-        console.log(`Lambda_${lambdaNumber} raw stream data:`, streamData);
-        return streamData;
+        return await waitForStream(streamResponse.data);
     } catch (error) {
-        console.error(`Lambda_${lambdaNumber} error:`, error.message);
-        if (error.response) {
-            console.error(`Lambda_${lambdaNumber} response data:`, error.response.data);
-            console.error(`Lambda_${lambdaNumber} response status:`, error.response.status);
-        }
-        throw error;
+        throw new Error(`Lambda_${lambdaNumber} error: ` + error.message);
     }
 }
 
-// Download file helper
-async function downloadFile(url, outputPath, attempt = 1, maxRetries = 3) {
-    console.log(`Attempt ${attempt} to download from: ${url}`);
+async function downloadFile(url, outputPath) {
     try {
         const normalizedUrl = normalizeUrl(url);
         const writer = fs.createWriteStream(outputPath);
-        const downloadResponse = await axios.get(normalizedUrl, {
-            responseType: 'stream',
-            httpsAgent,
-        });
-
-        downloadResponse.data.pipe(writer);
+        const response = await axios.get(normalizedUrl, { responseType: 'stream', httpsAgent });
+        response.data.pipe(writer);
 
         await new Promise((resolve, reject) => {
-            writer.on('finish', () => {
-                console.log(`File saved to ${outputPath}`);
-                console.log('Output available at:', normalizedUrl);
-                resolve();
-            });
-            writer.on('error', err => {
-                console.error('Download write error:', err.message);
-                reject(err);
-            });
+            writer.on('finish', resolve);
+            writer.on('error', reject);
         });
     } catch (error) {
-        console.error(`Download attempt ${attempt} failed:`, error.message);
-        if (error.response) {
-            console.error('Download response data:', error.response.data);
-            console.error('Download response status:', error.response.status);
-        }
-        if (attempt < maxRetries) {
-            console.log(`Retrying in 1 second...`);
-            await new Promise(resolve => setTimeout(resolve, 1000));
-            return downloadFile(url, outputPath, attempt + 1, maxRetries);
-        }
-        throw error;
+        throw new Error('Download error: ' + error.message);
     }
 }
 
-// Export final model
-async function exportModel(meshPaths) {
-    console.log('Exporting final model...');
+async function exportModel(meshPaths, jobId) {
     try {
         const postData = {
             data: [
@@ -279,8 +177,6 @@ async function exportModel(meshPaths) {
                 10000,
             ],
         };
-        console.log('Export payload:', JSON.stringify(postData, null, 2));
-
         const postResponse = await axios.post(`${BASE_URL}/call/on_export_click`, postData, {
             headers: { 'Content-Type': 'application/json' },
             httpsAgent,
@@ -293,67 +189,79 @@ async function exportModel(meshPaths) {
         });
 
         const streamData = await waitForStream(streamResponse.data);
-        console.log('Export response completed');
-        console.log('Export raw stream data:', streamData);
-
-        // Parse the export stream data
-        let outputUrl;
-        try {
-            if (streamData.includes('event: error')) {
-                console.error('Export stream returned an error:', streamData);
-                throw new Error('Export failed with server error');
-            }
-            const eventData = streamData.split('event: complete\ndata: ')[1];
-            if (!eventData) {
-                throw new Error('No complete event data found in stream');
-            }
-            const parsedData = JSON.parse(eventData);
-            // Derive the correct URL from the iframe source
-            outputUrl = normalizeUrl(deriveExportUrl(parsedData[0]));
-            console.log('Derived export output URL:', outputUrl);
-
-            // Validate URL
-            const isValid = await validateUrl(outputUrl);
-            if (!isValid) {
-                console.error('Output URL is invalid:', outputUrl);
-                throw new Error('Output URL is not accessible');
-            }
-        } catch (error) {
-            console.error('Error processing export stream:', error.message);
-            throw error;
+        if (streamData.includes('event: error')) {
+            throw new Error('Export failed with server error');
         }
 
-        // Download the final output
-        const outputPath = path.join(__dirname, OUTPUT_FILE);
+        const eventData = streamData.split('event: complete\ndata: ')[1];
+        if (!eventData) throw new Error('No complete event data found in stream');
+
+        const parsedData = JSON.parse(eventData);
+        const outputUrl = normalizeUrl(deriveExportUrl(parsedData[0]));
+        if (!await validateUrl(outputUrl)) {
+            throw new Error('Output URL is not accessible');
+        }
+
+        const outputPath = path.join(OUTPUT_DIR, `${jobId}.glb`);
         await downloadFile(outputUrl, outputPath);
-
-        return streamData;
+        return outputUrl;
     } catch (error) {
-        console.error('Export error:', error.message);
-        if (error.response) {
-            console.error('Export response data:', error.response.data);
-            console.error('Export response status:', error.response.status);
-        }
-        throw error;
+        throw new Error('Export error: ' + error.message);
     }
 }
 
-// Main function
-(async () => {
+// Process job asynchronously
+async function processJob(jobId, imagePath) {
+    jobs[jobId].status = 'processing';
     try {
-        console.log('Starting script execution...');
-        const uploadData = await uploadImage();
+        const uploadId = uuidv4();
+        const uploadData = await uploadImage(imagePath, uploadId);
         const meshPaths = await triggerGeneration(uploadData);
         for (let i = 4; i <= 6; i++) {
             await triggerLambda(i);
         }
-        await exportModel(meshPaths);
-        console.log('Script execution completed successfully');
+        const outputUrl = await exportModel(meshPaths, jobId);
+        jobs[jobId].status = 'completed';
+        jobs[jobId].outputUrl = outputUrl;
+        jobs[jobId].outputPath = path.join(OUTPUT_DIR, `${jobId}.glb`);
     } catch (error) {
-        console.error('Main execution error:', error.message);
-        if (error.response) {
-            console.error('Main response data:', error.response.data);
-            console.error('Main response status:', error.response.status);
-        }
+        jobs[jobId].status = 'failed';
+        jobs[jobId].error = error.message;
     }
-})();
+}
+
+// Endpoints
+app.post('/api/jobs', upload.single('image'), async (req, res) => {
+    if (!req.file) {
+        return res.status(400).json({ error: 'No image uploaded' });
+    }
+
+    const jobId = uuidv4();
+    jobs[jobId] = {
+        id: jobId,
+        status: 'pending',
+        createdAt: new Date(),
+        imagePath: req.file.path,
+    };
+
+    // Process job in the background
+    processJob(jobId, req.file.path).catch(err => console.error(`Job ${jobId} failed:`, err));
+
+    res.status(201).json({ jobId, status: 'pending' });
+});
+
+app.get('/api/jobs', (req, res) => {
+    const jobList = Object.values(jobs).map(job => ({
+        id: job.id,
+        status: job.status,
+        createdAt: job.createdAt,
+        outputUrl: job.outputUrl || null,
+        error: job.error || null,
+    }));
+    res.json(jobList);
+});
+
+// Start server
+app.listen(PORT, () => {
+    console.log(`Server running on port ${PORT}`);
+});
