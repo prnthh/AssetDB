@@ -17,7 +17,7 @@ const PORT = process.env.PORT || 3000;
 const httpsAgent = new https.Agent({ rejectUnauthorized: false });
 
 // Configuration
-const BASE_URL = 'http://192.168.0.239:42004';
+const BASE_URL = 'http://192.168.0.239:42004'; // move this to .env on the backend, this link should never be exposed on client.
 const OUTPUT_DIR = path.join(__dirname, 'outputs');
 const UPLOAD_DIR = path.join(__dirname, 'uploads');
 
@@ -259,6 +259,37 @@ app.get('/api/jobs', (req, res) => {
         error: job.error || null,
     }));
     res.json(jobList);
+});
+
+// Endpoint to serve the .glb file for a given job ID
+app.get('/api/jobs/:jobId/file', (req, res) => {
+    const jobId = req.params.jobId;
+
+    // Check if job exists and has completed
+    const job = jobs[jobId];
+    if (!job || job.status !== 'completed' || !job.outputPath) {
+        return res.status(404).json({ error: 'File not found or job not completed' });
+    }
+
+    // Verify the file exists on disk
+    const filePath = path.join(OUTPUT_DIR, `${jobId}.glb`);
+    if (!fs.existsSync(filePath)) {
+        return res.status(404).json({ error: 'File not found on server' });
+    }
+
+    // Set appropriate headers for file download
+    res.setHeader('Content-Type', 'model/gltf-binary');
+    res.setHeader('Content-Disposition', `attachment; filename="${jobId}.glb"`);
+
+    // Stream the file to the client
+    const fileStream = fs.createReadStream(filePath);
+    fileStream.pipe(res);
+
+    // Handle stream errors
+    fileStream.on('error', (err) => {
+        console.error(`Error streaming file for job ${jobId}:`, err);
+        res.status(500).json({ error: 'Error serving file' });
+    });
 });
 
 // Start server

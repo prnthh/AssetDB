@@ -137,6 +137,9 @@ function Tile({ job }) {
   const [isRevealed, setIsRevealed] = useState(false);
   const handleClick = () => setIsRevealed(prev => !prev);
 
+  // Construct the file URL using the new endpoint
+  const fileUrl = job.status === 'completed' ? `${API_URL}/jobs/${job.id}/file` : null;
+
   return (
     <div
       className={`border border-gray-200 rounded-lg p-4 w-64 min-h-[50px] cursor-pointer transition-shadow duration-200 ease-in-out flex flex-col items-center hover:shadow-md ${isRevealed ? "border-2 border-blue-500 shadow-lg" : ""}`}
@@ -144,8 +147,8 @@ function Tile({ job }) {
     >
       <div className="w-full flex justify-between items-center mb-2.5">
         <span className="font-bold">Job {job.id}</span>
-        {job.status === 'completed' && job.outputUrl && (
-          <a href={job.outputUrl} download onClick={e => e.stopPropagation()}>
+        {job.status === 'completed' && fileUrl && (
+          <a href={fileUrl} download={`${job.id}.glb`} onClick={e => e.stopPropagation()}>
             <button className="bg-blue-500 hover:bg-blue-700 text-white text-xs py-1 px-2 rounded">Download GLB</button>
           </a>
         )}
@@ -155,8 +158,8 @@ function Tile({ job }) {
         <p>Created: {new Date(job.createdAt).toLocaleString()}</p>
         {job.error && <p className="text-red-500">{job.error}</p>}
       </div>
-      {isRevealed && job.status === 'completed' && job.outputUrl ? (
-        <ThreeJSViewer modelUrl={job.outputUrl} key={job.id} />
+      {isRevealed && job.status === 'completed' && fileUrl ? (
+        <ThreeJSViewer modelUrl={fileUrl} key={job.id} />
       ) : (
         <div className="w-full h-24 bg-gray-200 rounded flex items-center justify-center">
           <span className="text-gray-500">{job.status === 'completed' ? 'Click to view model' : 'Processing...'}</span>
