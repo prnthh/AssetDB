@@ -3,7 +3,9 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 
-const API_URL = 'http://localhost:3000/api';
+// const API_URL = 'http://localhost:3000/api';
+const API_URL = 'https://02ce-49-205-149-119.ngrok-free.app/api';
+
 
 function ThreeJSViewer({ modelUrl }) {
   const mountRef = useRef(null);
@@ -222,7 +224,7 @@ function App() {
 
   return (
     <div className="container mx-auto p-4 text-center">
-      <h1 className="text-3xl font-bold mb-6">3D Model Generator</h1>
+      <h1 className="text-3xl font-bold mb-6">Pockit Asset Database</h1>
       
       <div className="mb-8 p-6 bg-white rounded-lg shadow-md">
         <h2 className="text-xl font-semibold mb-4">Upload Image</h2>
